@@ -1,0 +1,99 @@
+task buildRPM(type: Rpm) {
+  arch = 'x86_64'
+
+  requires('java-11-openjdk')
+
+  directory("/opt/${project.name}/logs")
+  directory("/etc/${project.name}/dictionary")
+}
+
+task buildDEB(type: Deb) {
+  arch = 'amd64'
+
+  requires('openjdk-11-jdk')
+
+  directory("/opt/${project.name}/logs")
+  directory("/etc/${project.name}/dictionary")
+}
+
+ospackage {
+  packageName = project.name
+  version = project.version.toString()
+
+  permissionGroup "${username}"
+  user "${username}"
+
+  packageGroup 'CMLBench'
+
+  preInstall("""
+    |groupadd -f ${username}
+    |useradd -g ${username} -M -d "/opt/${project.name}" -s /sbin/nologin ${username} > /dev/null 2>&1 ||:
+  """.stripMargin())
+  postInstall("systemctl preset ${project.name} > /dev/null 2>&1")
+  preUninstall("""
+    |systemctl disable ${project.name} > /dev/null 2>&1
+    |systemctl stop ${project.name} > /dev/null 2>&1
+  """.stripMargin())
+  postUninstall("""
+    |systemctl daemon-reload > /dev/null 2>&1
+    |userdel -rf ${username} > /dev/null 2>&1
+  """.stripMargin())
+
+  into "/opt/${project.name}"
+
+  from(bootJar.outputs.files) {
+    into 'bin'
+  }
+
+  from('libs') {
+    into 'lib'
+  }
+
+  from('database') {
+    into 'db'
+  }
+
+  from('dictionary') {
+    into "/etc/${project.name}/dictionary/"
+    rename ('fn.json', 'fn-dictionary.json')
+    fileType CONFIG | NOREPLACE
+    fileMode 0x1A4 // octal 0644
+  }
+
+  // systemd service
+  from("packaging") {
+    into('/etc/systemd/system/')
+    include('systemd.service')
+    rename ('systemd.service', "${project.name}.service")
+    expand(project.properties
+        << [ externalJars:
+                 fileTree('libs')
+                    .collect { "/opt/${project.name}/lib/${it.name}:" }
+                    .join(),
+             username: username
+           ]
+    )
+    user "root"
+    permissionGroup "root"
+    fileMode 0x1A4 // octal 0644
+  }
+
+  // application configuration file
+  from('build/resources/main/application.properties') {
+    rename ('application.properties', 'common.properties')
+    fileType CONFIG | NOREPLACE
+    into("/etc/${project.name}/")
+    fileMode 0x1A4 // octal 0644
+  }
+
+  // build info
+  from('packaging/build_info') {
+    into("/etc/${project.name}/")
+    user "root"
+    permissionGroup "root"
+    fileMode 0x1A4 // octal 0644
+  }
+
+  // link log files
+  link("/var/log/${project.name}", "/opt/${project.name}/logs")
+}
